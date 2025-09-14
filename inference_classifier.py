@@ -10,6 +10,9 @@ import gc
 import torch
 import argparse
 from sklearn.model_selection import train_test_split
+import warnings
+warnings.filterwarnings('ignore',
+                        message="`torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.", category=FutureWarning)
 
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
@@ -77,12 +80,12 @@ def compute_ece(y_true, y_prob, n_bins=10):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run LimiX inference')
-    parser.add_argument('--data_dir', type=str, default=None, help='Specify the local storage directory of the dataset')
-    parser.add_argument('--save_name', default=None, type=str, help="path to save result")
-    parser.add_argument('--inference_config_path', type=str, default="./config/cls_default_retrieval.json", help="path to example config")
-    parser.add_argument('--model_path',type=str, default=None, help="path to you model")
+    parser.add_argument('--data_dir', type=str, default='/root/autodl-tmp/LimiX/datadir', help='Specify the local storage directory of the dataset')
+    parser.add_argument('--save_name', default='result', type=str, help="path to save result")
+    parser.add_argument('--inference_config_path', type=str, default="config/dynamic_cls.json", help="path to example config")
+    parser.add_argument('--model_path',type=str, default='cache/LimiX-16M.ckpt', help="path to you model")
     parser.add_argument('--inference_with_DDP', default=False, action='store_true', help="Inference with DDP")
-    parser.add_argument('--debug', default=False, action='store_true', help="debug mode")
+    parser.add_argument('--debug', default=True, action='store_true', help="debug mode")
     args = parser.parse_args()
 
     model_file = args.model_path
@@ -116,7 +119,7 @@ if __name__ == '__main__':
     scaler = MinMaxScaler()
     le = LabelEncoder()
 
-
+    print("If use DDP",args.inference_with_DDP)
     classifier = LimiXPredictor(device=torch.device("cuda" if torch.cuda.is_available() else "cpu"), model_path=model_file,inference_config=inference_config,
                                inference_with_DDP=args.inference_with_DDP,task_type="Classification")
     
@@ -129,99 +132,105 @@ if __name__ == '__main__':
         if os.path.isfile(folder_path):
             continue
 
-        try:
-            # start_time_pre = time.time()
-            train_path = os.path.join(folder_path, folder+'_train.csv')
-            test_path = os.path.join(folder_path, folder+'_test.csv')
-            if os.path.exists(train_path):
-                train_df = pd.read_csv(train_path)
+        # try:
+        # start_time_pre = time.time()
+        train_path = os.path.join(folder_path, folder+'_train.csv')
+        test_path = os.path.join(folder_path, folder+'_test.csv')
+        if os.path.exists(train_path):
+            train_df = pd.read_csv(train_path,index_col=0)
+            
+            if os.path.exists(test_path):
+                test_df = pd.read_csv(test_path,index_col=0)
+            else:
+                # If there is no test.csv, split train.csv into training and testing sets
+                train_df, test_df = train_test_split(train_df, test_size=0.5, random_state=42)
                 
-                if os.path.exists(test_path):
-                    test_df = pd.read_csv(test_path)
-                else:
-                    # If there is no test.csv, split train.csv into training and testing sets
-                    train_df, test_df = train_test_split(train_df, test_size=0.5, random_state=42)
-                    
-            dataset_name = folder  # Use the folder name as the dataset name.
+        dataset_name = folder  # Use the folder name as the dataset name.
 
-            # The last column is the target variable
-            X_train = train_df.iloc[:, :-1]
-            y_train = train_df.iloc[:, -1]
-            X_test = test_df.iloc[:, :-1]
-            y_test = test_df.iloc[:, -1]
+        # The last column is the target variable
+        X_train = train_df.iloc[:, :-1]
+        y_train = train_df.iloc[:, -1]
+        X_test = test_df.iloc[:, :-1]
+        y_test = test_df.iloc[:, -1]
 
-            for col in X_train.columns:
-                if X_train[col].dtype == 'object':  # Check whether it is a string column.
-                    try:
-                        le = LabelEncoder()
-                        X_train[col] = le.fit_transform(X_train[col])
-                        X_test[col] = le.transform(X_test[col])
-                    except Exception as e:
-                        X_train = X_train.drop(columns=[col])
-                        X_test = X_test.drop(columns=[col])
-            X_train = scaler.fit_transform(X_train)
-            X_test = scaler.transform(X_test)
+        for col in X_train.columns:
+            if X_train[col].dtype == 'object':  # Check whether it is a string column.
+                try:
+                    le = LabelEncoder()
+                    X_train[col] = le.fit_transform(X_train[col])
+                    X_test[col] = le.transform(X_test[col])
+                except Exception as e:
+                    X_train = X_train.drop(columns=[col])
+                    X_test = X_test.drop(columns=[col])
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
 
-            y_train = le.fit_transform(y_train)
-            y_test = le.transform(y_test) 
-            num_classes = len(le.classes_)
+        y_train = le.fit_transform(y_train)
+        y_test = le.transform(y_test) 
+        num_classes = len(le.classes_)
 
-            trainX, trainy = X_train, y_train
+        trainX, trainy = X_train, y_train
+        
+        trainX = np.asarray(trainX, dtype=np.float32)
+        trainy = np.asarray(trainy, dtype=np.int64)
+        
+        # Datasets with too many or too few categories are not supported yet
+        if len(np.unique(trainy)) > 10 or len(np.unique(trainy)) < 2:
+            continue
+        # When seq_len is greater than 50,000, skip due to GPU memory limitations
+        if len(trainX) >= 50000:
+            continue
+        
+        testX, testy = X_test, y_test
+        testX = np.asarray(testX, dtype=np.float32)
+        testy = np.asarray(testy, dtype=np.int64)
+
+        rst = {
+            'dataset name': folder,
+            'num_data_train': len(trainX),
+            'num_data_test': len(testX),
+            'num_feat': len(trainX[0]), 
+            'num_class': len(np.unique(trainy)),
+        }
+        
+
+        prediction_ = classifier.predict(trainX, trainy, testX)
+
+        #Save model weights
+        torch.save(classifier.model.state_dict(), '/root/autodl-tmp/LimiX/result/result/model.pth')
+
+
+        prediction_label = np.argmax(prediction_, axis=1)
+        class_num = prediction_.shape[1]
+        roc = auc_metric(testy, prediction_)
+        
+        acc = accuracy_score(testy, prediction_label)
+        f1 = f1_score(testy, prediction_label, average='macro' if num_classes > 2 else 'binary')
+        ce = log_loss(testy, prediction_)
+
+        ece = compute_ece(testy, prediction_, n_bins=10)
+        if not(int(os.environ.get('WORLD_SIZE', -1))>0 and dist.get_rank() != 0):
+                rst['acc'] = float(acc)
+                rst['f1'] = float(f1)
+                rst['logloss'] = float(ce)
+                rst['ece'] = float(ece)
+                rst['auc'] = float(roc)
+
+                output_df = {'label':testy}
+                for i in range(class_num):
+                    output_df[f'pred_{i}'] = prediction_[:,i]
+                pd.DataFrame(output_df).to_csv(os.path.join(save_root, rst['dataset name']+'_pred_LimiX.csv'), index=False)
+                del prediction_
+
+                rsts.append(rst)
+                if args.debug:
+                    print(f"[{idx}] {folder} -> {rst['auc']}")
             
-            trainX = np.asarray(trainX, dtype=np.float32)
-            trainy = np.asarray(trainy, dtype=np.int64)
-            
-            # Datasets with too many or too few categories are not supported yet
-            if len(np.unique(trainy)) > 10 or len(np.unique(trainy)) < 2:
-                continue
-            # When seq_len is greater than 50,000, skip due to GPU memory limitations
-            if len(trainX) >= 50000:
-                continue
-            
-            testX, testy = X_test, y_test
-            testX = np.asarray(testX, dtype=np.float32)
-            testy = np.asarray(testy, dtype=np.int64)
-
-            rst = {
-                'dataset name': folder,
-                'num_data_train': len(trainX),
-                'num_data_test': len(testX),
-                'num_feat': len(trainX[0]), 
-                'num_class': len(np.unique(trainy)),
-            }
-
-            prediction_ = classifier.predict(trainX, trainy, testX)
-            prediction_label = np.argmax(prediction_, axis=1)
-            class_num = prediction_.shape[1]
-            roc = auc_metric(testy, prediction_)
-            
-            acc = accuracy_score(testy, prediction_label)
-            f1 = f1_score(testy, prediction_label, average='macro' if num_classes > 2 else 'binary')
-            ce = log_loss(testy, prediction_)
-
-            ece = compute_ece(testy, prediction_, n_bins=10)
-            if not(int(os.environ.get('WORLD_SIZE', -1))>0 and dist.get_rank() != 0):
-                    rst['acc'] = float(acc)
-                    rst['f1'] = float(f1)
-                    rst['logloss'] = float(ce)
-                    rst['ece'] = float(ece)
-                    rst['auc'] = float(roc)
-
-                    output_df = {'label':testy}
-                    for i in range(class_num):
-                        output_df[f'pred_{i}'] = prediction_[:,i]
-                    pd.DataFrame(output_df).to_csv(os.path.join(save_root, rst['dataset name']+'_pred_LimiX.csv'), index=False)
-                    del prediction_
-
-                    rsts.append(rst)
-                    if args.debug:
-                        print(f"[{idx}] {folder} -> {rst['auc']}")
-            
-        except Exception as e:
-            print(f"Error processing: {e}")
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        # except Exception as e:
+        #     print(f"Error processing: {e}")
+        #     gc.collect()
+        #     if torch.cuda.is_available():
+        #         torch.cuda.empty_cache()
 
         gc.collect()
         if torch.cuda.is_available():
@@ -229,4 +238,3 @@ if __name__ == '__main__':
     if not(int(os.environ.get('WORLD_SIZE', -1))>0 and dist.get_rank() != 0):
         rstsdf = pd.DataFrame(rsts)
         rstsdf.to_csv(os.path.join(save_root, 'all_rst.csv'), index=False)
-

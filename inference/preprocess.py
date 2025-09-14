@@ -545,7 +545,7 @@ class SubSampleData():
             y: torch.Tensor = None,
             feature_attention_score: torch.Tensor = None,
             sample_attention_score: torch.Tensor = None,
-            subsample_ratio: float | int = 200,
+            subsample_ratio: float | int | str = 200, # Added subsample_ratio parameter
             subsample_idx:list[int] | np.ndarray[int] = None,
             ):
         if isinstance(subsample_ratio, float):
@@ -553,8 +553,11 @@ class SubSampleData():
                 self.subsample_num = int(subsample_ratio * x.shape[0])
             else:
                 self.subsample_num = int(subsample_ratio * x.shape[1])
-        else:
+        elif isinstance(subsample_ratio, int):
             self.subsample_num = subsample_ratio
+        elif isinstance(subsample_ratio, str) and subsample_ratio == 'dynamic':
+            self.subsample_num = subsample_ratio  # Keep it as 'dynamic'
+            
         if self.subsample_type == "sample":
             if self.use_type == "mixed":
                 y_feature_attention_score = feature_attention_score[:, -1, :].squeeze().permute(1, 0).unsqueeze(
@@ -567,16 +570,27 @@ class SubSampleData():
                 self.attention_score = sample_attention_score[-1, :, :]
             self.X_train = x
             self.y_train = y
-        else:
+        else: # self.subsample_type == "feature"
             y_feature_attention_score = torch.mean(feature_attention_score[:, -1, :].squeeze(),dim=0)  # shape [test_sample_lens,features]
             if subsample_idx is None:
-                self.subsample_idx = np.argsort(y_feature_attention_score)[-min(self.subsample_num, x.shape[0]):]
+                # Handle the 'dynamic' case correctly
+                if isinstance(self.subsample_num, str) and self.subsample_num == 'dynamic':
+                    # Assuming you have a subsample_ratio somewhere for the dynamic case
+                    # This line was causing the error previously.
+                    subsample_n = int(x.shape[0] * 0.5) # Example: use a default ratio
+                    # You might need to pass `subsample_ratio` from the caller
+                    # to make this more configurable.
+                else:
+                    subsample_n = int(self.subsample_num)
+
+                self.subsample_idx = np.argsort(y_feature_attention_score.cpu())[-min(subsample_n, x.shape[1]):]
             else:
                 self.subsample_idx = subsample_idx
             self.X_train = x
 
     def transform(self, x: torch.Tensor=None) -> np.ndarray |torch.Tensor | TabularInferenceDataset:
         if self.subsample_type == "feature":
-            return torch.cat([self.X_train, x], dim=0)[:, self.subsample_idx].numpy()
+            # ensure X_train is on cpu before converting to numpy
+            return torch.cat([self.X_train.cpu(), x.cpu()], dim=0)[:, self.subsample_idx].numpy()
         else:
             return self.attention_score

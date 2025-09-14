@@ -16,11 +16,11 @@
     },
     "retrieval_config": {
       "use_retrieval": true,
-      "retrieval_before_preprocessing": false,
+      "retrieval_before_preprocessing": true,
       "calculate_feature_attention": true,
       "calculate_sample_attention": true,
       "subsample_ratio": "dynamic",
-      "subsample_type": "sample",
+      "subsample_type": "feature",
       "use_type": "mixed"
     }
   },
@@ -41,11 +41,11 @@
     },
     "retrieval_config": {
       "use_retrieval": true,
-      "retrieval_before_preprocessing": false,
+      "retrieval_before_preprocessing": true,
       "calculate_feature_attention": true,
       "calculate_sample_attention": true,
       "subsample_ratio": "dynamic",
-      "subsample_type": "sample",
+      "subsample_type": "feature",
       "use_type": "mixed"
     }
   },
@@ -66,11 +66,11 @@
     },
     "retrieval_config": {
       "use_retrieval": true,
-      "retrieval_before_preprocessing": false,
+      "retrieval_before_preprocessing": true,
       "calculate_feature_attention": true,
       "calculate_sample_attention": true,
       "subsample_ratio": "dynamic",
-      "subsample_type": "sample",
+      "subsample_type": "feature",
       "use_type": "mixed"
     }
   },
@@ -91,11 +91,11 @@
     },
     "retrieval_config": {
       "use_retrieval": true,
-      "retrieval_before_preprocessing": false,
+      "retrieval_before_preprocessing": true,
       "calculate_feature_attention": true,
       "calculate_sample_attention": true,
       "subsample_ratio": "dynamic",
-      "subsample_type": "sample",
+      "subsample_type": "feature",
       "use_type": "mixed"
     }
   }

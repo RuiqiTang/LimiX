@@ -19,6 +19,7 @@ import pandas as pd
 import einops
 import json
 import os
+import datetime
 
 
 NA_PLACEHOLDER = "__MISSING__"
@@ -86,7 +87,23 @@ class LimiXPredictor:
         
         random.seed(seed)
         rand_gen = np.random.default_rng(seed)
-        self.seeds = [random.randint(0, 10000) for _ in range(n_estimators*self.preprocess_num)]
+        
+        # Calculate the maximum number of preprocessing steps per pipeline
+        max_steps = 0
+        for inference_config_item in inference_config:
+            pipeline_steps = 4  # Base steps: FilterValidFeatures, RebalanceFeatureDistribution, CategoricalFeatureEncoder, FeatureShuffler
+            retrieval_config = inference_config_item["retrieval_config"]
+            if retrieval_config["use_retrieval"]:
+                if retrieval_config["retrieval_before_preprocessing"]:
+                    pipeline_steps += 2  # InferenceAttentionMap and SubSampleData
+                if not retrieval_config["retrieval_before_preprocessing"]:
+                    pipeline_steps += 2  # InferenceAttentionMap and SubSampleData
+            max_steps = max(max_steps, pipeline_steps)
+            
+        # Generate seeds for each potential step in each pipeline
+        self.seeds = [random.randint(0, 10000) for _ in range(n_estimators * max_steps)]
+        
+        # Generate shifts for feature shuffling
         start_idx = rand_gen.integers(0, 1000)
         all_shifts = list(range(start_idx, start_idx + n_estimators))
         self.all_shifts = rand_gen.choice(all_shifts, size=n_estimators, replace=False)
@@ -116,8 +133,8 @@ class LimiXPredictor:
                     assert retrieval_config[
                         "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
                 pipeline.append(
-                    InferenceAttentionMap(model_path, retrieval_config["calculate_feature_attention"],
-                                          retrieval_config["calculate_sample_attention"]))
+                    InferenceAttentionMap(model_path, calculate_feature_attention=True, #retrieval_config["calculate_feature_attention"]
+                                          calculate_sample_attention=retrieval_config["calculate_sample_attention"]))
                 pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
             pipeline.append(FilterValidFeatures())
             pipeline.append(RebalanceFeatureDistribution(**inference_config_item['RebalanceFeatureDistribution']))
@@ -136,10 +153,16 @@ class LimiXPredictor:
                     assert retrieval_config[
                         "calculate_feature_attention"], "Retrieval on sample level must calculate feature attention score before."
                 pipeline.append(
-                    InferenceAttentionMap(model_path, retrieval_config["calculate_feature_attention"],
-                                          retrieval_config["calculate_sample_attention"]))
+                    InferenceAttentionMap(model_path, calculate_feature_attention=True, #retrieval_config["calculate_feature_attention"]
+                                          calculate_sample_attention=retrieval_config["calculate_sample_attention"]))
                 pipeline.append(SubSampleData(retrieval_config["subsample_type"], retrieval_config["use_type"]))
             self.preprocess_pipelines.append(pipeline)
+        
+        # show pip lines
+        for i,pipeline in enumerate(self.preprocess_pipelines):
+            print(f"Pipeline {i}:")
+            for step in pipeline:
+                print(f" {type(step).__name__}")
 
 
     def _check_n_features(self, X, reset):
@@ -283,6 +306,7 @@ class LimiXPredictor:
             categorical_idx_ = categorical_idx.copy()
             for id_step, step in enumerate(pipe):
                 if isinstance(step, RebalanceFeatureDistribution):
+                    print("RebalanceFeatureDistribution")
                     x_train_ = x_[:len(y_train)]
                     x_test_ = x_[len(y_train):]
                     if x_train_.shape[1] != x_test_.shape[1]:
@@ -291,12 +315,23 @@ class LimiXPredictor:
                     x_test_, categorical_idx_ = step.transform(x_test_)
                     x_ = np.concatenate([x_train_, x_test_], axis=0)
                 elif isinstance(step, InferenceAttentionMap):
+                    print("InferenceAttentionMap")
+                    print('='*10,x_[:len(y_train)].shape,type(x_))
                     feature_attention_score, sample_attention_score = step.inference(X_train=x_[:len(y_train)],
                                                                                      y_train=y_train,
                                                                                      X_test=x_[len(y_train):],
                                                                                      task_type="cls")
-                   
+                    # print("id_pipline",id_pipe,"feature_attention_score:",feature_attention_score)
+                    
+                    # Save feature attention score
+                    if feature_attention_score is not None:
+                        output_dir = os.path.join("result", "feature_attention_score")
+                        os.makedirs(output_dir, exist_ok=True)
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        output_path = os.path.join(output_dir, f"pipeline_{id_pipe}_step_{id_step}_{timestamp}.npy")
+                        np.save(output_path, feature_attention_score.cpu())
                 elif isinstance(step, SubSampleData):
+                    print("SubSampleData")
                     step.fit(torch.from_numpy(x_[:len(y_train)]), torch.from_numpy(y_train),
                              feature_attention_score=feature_attention_score,
                              sample_attention_score=sample_attention_score,
@@ -480,6 +515,7 @@ class LimiXPredictor:
         mask_predictions = []
         for id_pipe, pipe in enumerate(self.preprocess_pipelines):
             x_ = x.copy()
+            print("="*10,x.shape)
             y_ = y_train.copy()
             categorical_idx_ = categorical_idx.copy()
             for id_step, step in enumerate(pipe):
@@ -492,11 +528,19 @@ class LimiXPredictor:
                     x_test_, categorical_idx_ = step.transform(x_test_)
                     x_ = np.concatenate([x_train_, x_test_], axis=0)
                 elif isinstance(step, InferenceAttentionMap):
-
+                    print('='*10,x_[:len(y_train)].shape)
                     feature_attention_score, sample_attention_score = step.inference(X_train=x_[:len(y_train)],
                                                                                      y_train=y_train,
                                                                                      X_test=x_[len(y_train):],
                                                                                      task_type="reg")
+                    
+                    # Save feature attention score
+                    if feature_attention_score is not None:
+                        output_dir = os.path.join("result", "feature_attention_score")
+                        os.makedirs(output_dir, exist_ok=True)
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        output_path = os.path.join(output_dir, f"pipeline_{id_pipe}_step_{id_step}_{timestamp}_reg.npy")
+                        np.save(output_path, feature_attention_score)
                     
                 elif isinstance(step, SubSampleData):
                     step.fit(torch.from_numpy(x_[:len(y_train)]), torch.from_numpy(y_train),
